@@ -27,6 +27,7 @@ static const MemMapEntry quard_star_memmap[] = {
     [QUARD_STAR_MROM]  = {        0x0,        0x8000 },   
     [QUARD_STAR_SRAM]  = {     0x8000,        0x8000 },
     [QUARD_STAR_UART0] = { 0x10000000,         0x100 }, 
+    [QUARD_STAR_FLASH] = { 0x20000000,     0x2000000 }, 
     [QUARD_STAR_DRAM]  = { 0x80000000,          0x80 },   
 };
 /*创建CPU */
@@ -101,11 +102,49 @@ static void quard_star_memory_create(MachineState *machine)
                                 quard_star_memmap[QUARD_STAR_MROM].base, mask_rom);
 
     riscv_setup_rom_reset_vec(machine, &s->soc[0], 
-                              quard_star_memmap[QUARD_STAR_MROM].base,
+                              quard_star_memmap[QUARD_STAR_FLASH].base,
                               quard_star_memmap[QUARD_STAR_MROM].base,
                               quard_star_memmap[QUARD_STAR_MROM].size,
                               0x0, 0x0);
 }
+
+/*创建flash*/
+static void quard_star_flash_create(MachineState *machine)
+{
+    #define QUARD_STAR_FLASH_SECTOR_SIZE (256 * KiB) //定义了Flash存储的扇区大小
+    QuardStarState *s = RISCV_VIRT_MACHINE(machine);
+    MemoryRegion *system_memory = get_system_memory(); //获取虚拟机的系统内存区域，用于将Flash设备映射到虚拟机的地址空间中
+    DeviceState *dev = qdev_new(TYPE_PFLASH_CFI01); //创建一个新的Flash设备实例，设备类型为 PFLASH_CFI01
+
+    qdev_prop_set_uint64(dev, "sector-length", QUARD_STAR_FLASH_SECTOR_SIZE); //设置扇区的大小为 256 KiB
+    qdev_prop_set_uint8(dev, "width", 4); //设置设备宽度为 4 字节
+    qdev_prop_set_uint8(dev, "device-width", 2); //设置每个Flash存储单元的宽度为 2 字节
+    qdev_prop_set_bit(dev, "big-endian", false); //设置设备为小端序模式
+    qdev_prop_set_uint16(dev, "id0", 0X89); //设置设备的制造商ID（id0）为 0x89，即Intel的ID
+    qdev_prop_set_uint16(dev, "id1", 0X18); //设置设备的型号ID（id1）为 0x18
+    qdev_prop_set_uint16(dev, "id2", 0X00); //置设备的 id2 和 id3 值为 0x00，这些值用于标识设备的特性
+    qdev_prop_set_uint16(dev, "id3", 0X00);
+    qdev_prop_set_string(dev, "name", "quard-star.flash0"); //设置设备的名字为 quard-star.flash0
+    //将创建的Flash设备 dev 添加为 QuardStarState 对象的子设备，并给它起名为 quard-star.flash0
+    object_property_add_child(OBJECT(s), "quard-star.flash0", OBJECT(dev)); 
+    //创建设备的别名，将 pflash0 指向Flash设备
+    object_property_add_alias(OBJECT(s), "pflash0", OBJECT(dev), "drive");
+
+    s->flash = PFLASH_CFI01(dev);//将设备 dev 转换为 PFLASH_CFI01 类型，并存储到 s->flash 中。
+    pflash_cfi01_legacy_drive(s->flash, drive_get(IF_PFLASH, 0, 0));//将Flash设备与虚拟机的一个闪存驱动器关联
+
+    hwaddr flashsize = quard_star_memmap[QUARD_STAR_FLASH].size;//获取Flash存储设备的大小，flashsize 从 quard_star_memmap（内存映射数组）中取出
+    hwaddr flashbase = quard_star_memmap[QUARD_STAR_FLASH].base;//获取Flash存储设备的基地址，flashbase 同样从 quard_star_memmap 中取得
+
+    assert(QEMU_IS_ALIGNED(flashsize, QUARD_STAR_FLASH_SECTOR_SIZE));//检查Flash大小是否与扇区大小对齐。如果不对齐，程序会中断
+    assert(flashsize / QUARD_STAR_FLASH_SECTOR_SIZE <= UINT32_MAX);//确认Flash存储的扇区数量不超过 UINT32_MAX（避免溢出）
+    qdev_prop_set_uint32(dev, "num-blocks", flashsize / QUARD_STAR_FLASH_SECTOR_SIZE);//设置Flash设备的块数量，即将Flash的总大小除以扇区大小
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);//将设备注册到系统总线，并释放不再需要的引用
+    //将Flash设备的内存区域添加到虚拟机的系统内存区域，并将其映射到虚拟机的地址空间（通过获取设备的MMIO区域并指定其基地址 flashbase）
+    memory_region_add_subregion(system_memory, flashbase, 
+                                sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0));
+}
+
 /* quard-star 初始化各种硬件 */
 
 static void quard_star_machine_init(MachineState *machine)
@@ -114,6 +153,8 @@ static void quard_star_machine_init(MachineState *machine)
     quard_star_cpu_create(machine);
    // 创建主存
     quard_star_memory_create(machine);
+    //创建flash
+    quard_star_flash_create(machine);
 }
 
 static void quard_star_machine_instance_init(Object *obj)

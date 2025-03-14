@@ -13,3 +13,7 @@ riscv_ss.add(when: 'CONFIG_ACPI', if_true: files('virt-acpi-build.c'))
 riscv_ss.add(when: 'CONFIG_QUARD_STAR', if_true: files('quard_star.c'))
 
 hw_arch += {'riscv': riscv_ss}
+
+
+
+
